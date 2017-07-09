@@ -4,6 +4,11 @@
 ##
 ## 
 ###############################################################################################
+"""ALGORITHM FOR PREPROCESSING DSB3 CT AND MHD DATA - INCLUDING SEGMENTATION. Note: Unless
+   specficially intended, users should only change elements in the '__main__' method
+   located at the end of this file. The methods should not be changed unless someone
+   knows what they are doing.
+"""
 
 ########################################   IMPORT PK  ######################################### 
 
@@ -204,7 +209,6 @@ def segment_slice(im):
 # Segment each slice per patient
 def segment(patient):
     #THIS CAN TAKE SOME TIME
-    logger.debug("Segmenting patient slices...This can take some time depending on number of slices")
     return np.asarray([segment_slice(slice) for slice in patient])
 
 # Validate - sometimes segmentation fails and patient data is blank
@@ -252,7 +256,7 @@ def interpolate(myarray):
 # Get Label - Class Cancer or Non-cancer
 def get_label(patient,labeldict):
     try:
-        label = labeldict[patient]
+        label = int(labeldict[patient])
     except:
         label = None
     return label
@@ -273,14 +277,14 @@ def partial_preprocess(input_dict,idx):
     
     # RETRIEVE DATA FROM DICTIONARY
     datafiles = input_dict["datafiles"]
-    logger = input_dict["logger"]
     dicom_dir = input_dict["dicom_dir"]
     luna_dir = input_dict["luna_dir"]
     dicom_dict = input_dict["dicom_dict"]
+    channels = input_dict["channels"]
 
     #GET DATAFILE
     datafile = datafiles[idx]
-    logger.info("File: "+datafile)
+    logger.info("Begin File Preprocessing: "+datafile+" -- The segmentation might take a minute....")
 
     #LOAD DEPENDING IF MHD OR DICOM
     if ".mhd" in datafile:
@@ -295,44 +299,27 @@ def partial_preprocess(input_dict,idx):
         temp_label = get_label(name,dicom_dict)
     
     # SEGMENT LUNGS
-    logger.debug("Shape: "+str(temp_arr.shape))
     temp_arr = segment(temp_arr)
       
     # CHECK FOR IMPROPER SEGMENTATION AND INTERPOLATE
-    logger.debug("Validating segmentation")
     check = validate(temp_arr)
 
     if check==False:
-        logger.debug("VALIDATION - File Contains Blank Slice")
+        logger.debug("VALIDATION - File Contains Blank Slice: "+datafile)
         temp_arr = interpolate(temp_arr)
-        logger.debug("FIXED - Interpolation Complete")
     elif check==None:
         logger.debug("FATAL - File Skipped "+datafile+"\n")
-        continue
+        return np.zeros(temp_arr.shape),0,"null"
     else:
-        logger.debug("Image Segmented Correctly")
+        logger.debug("Image Segmented Correctly: "+datafile)
 
     #CREATE CHANNEL DATA
-    logger.debug("Creating channel data from images")
-    temp_arr = average_data(temp_arr, channels=5)
+    temp_arr = average_data(temp_arr, channels=channels)
+    logger.info("Finished File Preprocessing: "+datafile)
 
     return temp_arr,temp_label,name
 
-# Main Script
-if __name__=="__main__":
-    """ Does not contain resample, threshold, or zero pad logic """
-    
-    # USER PARAMETERS
-    LOG_LEVEL = logging.DEBUG
-    DICOM_DIR = "../data/stage1/stage1/"
-    DICOM_LABELS = "../data/stage1_labels.csv"
-    LUNA_DIR = "../data/LUNA/"
-    LUNA_LABELS = "../data/LUNA/CSVFILES/annotations.csv"
-    SAVE_DIR = "./preprocess/"
-
-    if not os.path.exists(SAVE_DIR):
-        os.mkdir(SAVE_DIR)
-
+def setup_logger():
     # SET LOGGING
     LOGFORMAT = "  %(log_color)s%(levelname)-8s%(reset)s | %(log_color)s%(message)s%(reset)s"
     logging.root.setLevel(LOG_LEVEL)
@@ -343,13 +330,33 @@ if __name__=="__main__":
     logger = logging.getLogger('pythonConfig')
     logger.setLevel(LOG_LEVEL)
     logger.addHandler(stream)
+    return logger
 
+
+# Main Script
+if __name__=="__main__":
+    """ Does not contain resample, threshold, or zero pad logic """
+    
+    # USER PARAMETERS
+    train_val_ratio = 0.8
+    LOG_LEVEL = logging.DEBUG
+    DICOM_DIR = "../data/stage1/stage1/"
+    DICOM_LABELS = "../data/stage1_labels.csv"
+    LUNA_DIR = "../data/LUNA/"
+    LUNA_LABELS = "../data/LUNA/CSVFILES/annotations.csv"
+    SAVE_DIR = "./preprocess/"
+    channels = 5
+
+    if not os.path.exists(SAVE_DIR):
+        os.mkdir(SAVE_DIR)
+
+    logger = setup_logger()    
     # LOG ENVIRONMENT INFORMATION TO THE USER
-    logger.info("Dicom Directory: "+DICOM_DIR)
-    logger.info("Dicom Labels: "+DICOM_LABELS)
-    logger.info("Luna Directory: "+LUNA_DIR)
-    logger.info("Luna Labels: "+LUNA_LABELS)
-    logger.info("Save Directory: "+SAVE_DIR)
+    logger.warn("Dicom Directory: "+DICOM_DIR+" -- THIS MIGHT NEED UPDATED ON YOUR MACHINE")
+    logger.warn("Dicom Labels: "+DICOM_LABELS+" -- THIS MIGHT NEED UPDATED ON YOUR MACHINE")
+    logger.warn("Luna Directory: "+LUNA_DIR+" -- THIS MIGHT NEED UPDATED ON YOUR MACHINE")
+    logger.warn("Luna Labels: "+LUNA_LABELS+" -- THIS MIGHT NEED UPDATED ON YOUR MACHINE")
+    logger.warn("Save Directory: "+SAVE_DIR+" -- THIS MIGHT NEED UPDATED ON YOUR MACHINE")
     
     # FIND DATA ON LOCAL MACHINE
     lunafiles = get_luna_data(LUNA_DIR,LUNA_LABELS)
@@ -370,8 +377,8 @@ if __name__=="__main__":
     logger.info("Parallelizing Across "+str(ncores)+" Cores")
 
     # SET INPUT DICTIONARY
-    d = dict(datafiles=datafiles,logger=logger,dicom_dir=DICOM_DIR,
-        luna_dir=LUNA_DIR,dicom_dict=mydict)
+    d = dict(datafiles=datafiles,dicom_dir=DICOM_DIR,
+        luna_dir=LUNA_DIR,dicom_dict=mydict,channels=channels)
 
     # BEGIN PARALLEL COMPUTATION
     logger.info("Beginning Parallel Computation")
@@ -379,95 +386,40 @@ if __name__=="__main__":
     results = pool.map(partial_function,rows)
 
     # SAFELY CLOSE PROCESSES
+    logger.info("Closing multiprocessors")
     pool.close()
     pool.join()
 
     # PRINT
-    print(results[0])
-    print(results[1])
+    logger.info("Postprocessing Parallelized Data")
+    filtered_results = [t for t in results if t[2]!="null"]
+    test_results = np.array([filtered_results[x][0] for x in range(len(filtered_results))])
+    alldata = test_results.reshape(len(filtered_results),channels,512,512)
+    labels = np.array([filtered_results[x][1] for x in range(len(filtered_results))])
+    names = np.array([filtered_results[x][2] for x in range(len(filtered_results))])
+    logger.debug("Data Entries: "+str(alldata.shape)+" Names: "+str(len(names))+" Labels: "+str(len(labels)))
 
-    # Iterate through files
-    #count = 0
-    #first = True
-    #for x in datafiles:
-    #    #Load scans in order 
-    #    logger.info("File "+str(count+1)+": "+x)
-    #    if ".mhd" in x:
-    #        temp_im,temp_arr = load_mhd_file(x)
-    #        name = re.sub(LUNA_DIR,"",x)
-    #        name = re.sub(".mhd","",name)
-    #        temp_label = 1 #the MHDs are all cancer
-    #    else:
-    #        temp_im = load_scans_in_order(x)
-    #        temp_arr = get_pixels_hu(temp_im)
-    #        name = re.sub(DICOM_DIR,"",x)
-    #        temp_label = get_label(name,mydict)
-    #    
-    #    # Segment lungs
-    #    logger.debug("Shape: "+str(temp_arr.shape))
-    #    temp_arr = segment(temp_arr)
-    #     
-    #    # Check for improper segmentation and interpolate
-    #    logger.debug("Validating segmentation")
-    #    check = validate(temp_arr)
-    #    if check==False:
-    #        logger.debug("VALIDATION - File Contains Blank Slice")
-    #        temp_arr = interpolate(temp_arr)
-    #        logger.debug("FIXED - Interpolation Complete")
-    #    elif check==None:
-    #        logger.debug("FATAL - File Skipped "+x+"\n")
-    #        continue
-    #    else:
-    #        logger.debug("Image Segmented Correctly")
-
-        # Average images to create channel data
-        #LOGIC FOR != 1024
-        #if (np.amin(arr)!=-1024) and (temp_label!=None):
-        #    logger.debug(str(count)+") Rejected: "+x)
-        #    count+=1
-        #    continue
-        #else:
-        #temp_arr = threshold(arr)
-    #    logger.debug("Creating channel data from images")
-    #    temp_arr = average_data(temp_arr, channels=5)
-    #    if first:
-    #        alldata = temp_arr
-    #        labels = temp_label
-    #        names = name
-    #        first = False
-    #        count+=1
-    #    else:
-    #        alldata = np.append(alldata,temp_arr,axis=0)
-    #        labels = np.append(labels,temp_label)
-    #        names = np.append(names,name)
-    #        logger.debug("Patient ID: "+name)
-    #        logger.debug("Processed Shape: "+str(alldata.shape))
-    #        logger.debug("Labels Shape: "+str(len(labels)))
-    #        logger.debug("Names Shape: "+str(len(names)))
-    #        count+=1
-    #    logger.debug("Finished preprocessing for this patient - cataloguing into main array")
-
-    # Only Take Inner 3 Channels - the outer two are usually edge data anyway
+    # ONLY TAKE INNER 3 CHANNELS - THE OUTER 2 ARE USUALLY EDGE DATA ANYWAY
     alldata = alldata[:,1:4,:,:]
 
-    # Save All Data
+    # SAVE ALL DATA
     logger.debug("Saving All Channel Array - This can take some time")
     np.savez_compressed(SAVE_DIR+"all",names=names,data=alldata,labels=labels) 
 
-    #Seperate Out Test Data
+    #SEPERATE OUT TEST DATA
     testidx = [i for i in range(len(labels)) if labels[i] is None]
-    test_arr,test_labels,test_names = dicom_arr[testidx],dicom_labels[testidx],dicom_names
+    test_arr,test_labels,test_names = alldata[testidx],labels[testidx],names[testidx]
     logger.debug("Saving Test Channel Array - This can take some time")
     np.savez_compressed(SAVE_DIR+"test",data=test_arr,labels=test_labels,names=test_names)
 
-    #And the other data plus randomization
+    #AND THE OTHER DATA PLUS RANDOMIZATION
     otheridx = [i for i in range(len(labels)) if labels[i] is not None]
     other_arr,other_labels,other_names = alldata[otheridx],labels[otheridx],names[otheridx]
-    p = np.random.permutation(len(all_labels))
+    p = np.random.permutation(len(other_labels))
     other_arr,other_labels,other_names = other_arr[p],other_labels[p],other_names[p]
 
-    #Split Training and Validation
-    amount = int(0.8*other_arr.shape[0])
+    #SPLIT TRAINING AND VALIDATION DATA
+    amount = int(train_val_ratio*other_arr.shape[0])
     train_arr,train_labels,train_names = other_arr[0:amount],other_labels[0:amount],other_names[0:amount]
     validate_arr,validate_labels,validate_names = other_arr[amount:],other_labels[amount:],other_names[amount:]
     logger.debug("Saving Train Channel Array - This can take some time")
@@ -475,13 +427,13 @@ if __name__=="__main__":
     logger.debug("Saving Validate Channel Array - This can take some time")
     np.savez_compressed(SAVE_DIR+"validate",data=validate_arr,labels=validate_labels,names=validate_names)
 
-    # Get class ratio
+    # GET CLASS RATIO FOR SETS
     train_ratio = np.count_nonzero(train_labels)/float(len(train_labels))
     validate_ratio = np.count_nonzero(validate_labels)/float(len(validate_labels))
     test_ratio = np.count_nonzero(test_labels)/float(len(test_labels))
 
-    #Output some basic data
-    logger.info("Preprocessing Complete")
+    #LOG SOME FINAL STATISTICS
+    logger.info("Preprocessing Complete - Train/Val Ratio "+str(train_val_ratio)+"/"+str(1-train_val_ratio))
     logger.info("-Training Size: "+str(train_arr.shape[0]))
     logger.info("--Class Ratio (Cancer/Non-Cancer): "+str(train_ratio))
     logger.info("-Validation Size: "+str(validate_arr.shape[0]))
