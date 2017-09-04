@@ -10,4 +10,4 @@ The LUNA images can be found here. There are no easy work arounds on this one. Y
 DICOM Stage 1 Data Size: 66.88 GB (compressed)
 LUNA Data: 66.24 (compressed)
 
-Note: The VoxNet will not work natively with the preprocessing script. It is intended to train on the 3D patient data, interpolated to consistent dimensions. Due to the size of the arrays - they must be loaded into memory in batches, and the weights saved off after each itereation.
+Note: The VoxNet will not work natively with the preprocessing script. It is intended to train on the 3D patient data, interpolated to consistent dimensions. Due to the size of the arrays - each batch must be loaded into memory independently, and the weights saved off after each update.
